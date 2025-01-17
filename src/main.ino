@@ -2,7 +2,6 @@
 #include <RadioLib.h>
 #include <utils/Cryptography.h>
 
-// Initialize the SX1262 radio module
 SX1262 radio = new Module(3, 20, 15, 2, SPI1, RADIOLIB_DEFAULT_SPI_SETTINGS);
 
 const size_t MAX_QUEUE_SIZE = 10;
@@ -180,14 +179,11 @@ void setup() {
 void loop() {
   String input = Serial.readStringUntil('\n');
   if (input.length() > 0) {
-    // Check if the input is the "/changekey" command
     if (input.startsWith("/changekey")) {
-      // Extract the new key from the input string
-      String newKeyInput = input.substring(10); // Remove "/changekey " prefix
+      String newKeyInput = input.substring(10);
       newKeyInput.trim();
 
       if (newKeyInput.length() == 0) {
-        // Disable encryption
         if (aes != nullptr) {
           delete aes;
           aes = nullptr;
@@ -195,7 +191,6 @@ void loop() {
         keySet = false;
         Serial.println("Encryption disabled.");
       } else {
-        // Adjust new key to 16 bytes
         if (newKeyInput.length() < 16) {
           Serial.println("Key is less than 16 bytes. Padding with zeros.");
           newKeyInput += String(16 - newKeyInput.length(), '0');
@@ -206,7 +201,6 @@ void loop() {
         for (int i = 0; i < 16; i++) {
           key[i] = newKeyInput[i];
         }
-        // Initialize or reinitialize AES with the new key
         if (aes == nullptr) {
           aes = new RadioLibAES128();
         }
@@ -215,13 +209,11 @@ void loop() {
         Serial.println("Encryption key changed.");
       }
     } else {
-      // Proceed with sending the message
       char buf[MAX_MSG_LENGTH];
       memset(buf, 0, sizeof(buf));
       int len = min((int)input.length(), (int)MAX_MSG_LENGTH - 1);
       strncpy(buf, input.c_str(), len);
       if (keySet) {
-        // PKCS#7 padding
         int padding = 16 - (len % 16);
         if (padding < 16) {
           memset(buf + len, padding, padding);
