@@ -55,17 +55,6 @@ Message dequeueMessage() {
   return msg;
 }
 
-String toHexString(const uint8_t* data, size_t length) {
-  String result = "";
-  for (size_t i = 0; i < length; i++) {
-    if (data[i] < 16) {
-      result += "0";
-    }
-    result += String(data[i], HEX);
-  }
-  return result;
-}
-
 void transmit(const uint8_t* data, size_t length) {
   if (keySet) {
     Serial.println("[SX1262] Starting transmission of encrypted data.");
