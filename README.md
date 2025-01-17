@@ -1,6 +1,6 @@
 # 📡 Pico P2P LoRa Chat 🚀
 
-This project demonstrates a half-duplex peer-to-peer (P2P) chat application using Raspberry Pi Pico 2W and Waveshare SX1262 LoRa modules. I tested a distance of a few centimeters between each peer and the speed was amazingly fast (realtime).
+This project demonstrates a half-duplex peer-to-peer (P2P) cipher chat application using Raspberry Pi Pico 2W and Waveshare SX1262 LoRa module. I tested a distance of a few centimeters between each peer and the speed was amazingly fast (realtime).
 
 ## Hardware Used
 
