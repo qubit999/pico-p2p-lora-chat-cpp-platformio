@@ -1,13 +1,19 @@
 #include <SPI.h>
 #include <RadioLib.h>
+#include <utils/Cryptography.h>
 
 // Initialize the SX1262 radio module
 SX1262 radio = new Module(3, 20, 15, 2, SPI1, RADIOLIB_DEFAULT_SPI_SETTINGS);
 
 const size_t MAX_QUEUE_SIZE = 10;
-const size_t MAX_MSG_LENGTH = 255;
+const size_t MAX_MSG_LENGTH = 256;
 
-char messageQueue[MAX_QUEUE_SIZE][MAX_MSG_LENGTH];
+typedef struct {
+  size_t length;
+  uint8_t data[MAX_MSG_LENGTH];
+} Message;
+
+Message messageQueue[MAX_QUEUE_SIZE];
 size_t queueHead = 0;
 size_t queueTail = 0;
 
@@ -15,53 +21,65 @@ bool transmitting = false;
 volatile bool actionDone = false;
 volatile bool receivedFlag = false;
 
+RadioLibAES128* aes = nullptr;
+uint8_t key[16];
+bool keySet = false;
+
 void setFlag() {
   if (transmitting) {
-    // Transmission has finished
     actionDone = true;
   } else {
-    // Packet received
     receivedFlag = true;
   }
 }
 
-void enqueueMessage(const char* message) {
+void enqueueMessage(const uint8_t* data, size_t length) {
   if ((queueTail + 1) % MAX_QUEUE_SIZE == queueHead) {
     Serial.println("Queue full, cannot enqueue message.");
     return;
   }
-  strncpy(messageQueue[queueTail], message, MAX_MSG_LENGTH - 1);
-  messageQueue[queueTail][MAX_MSG_LENGTH - 1] = '\0';
+  messageQueue[queueTail].length = length;
+  memcpy(messageQueue[queueTail].data, data, length);
   queueTail = (queueTail + 1) % MAX_QUEUE_SIZE;
-  //Serial.println("Enqueued message: " + String(message));
 }
 
-char* dequeueMessage() {
+Message dequeueMessage() {
   if (queueHead == queueTail) {
     Serial.println("Queue empty, no message to dequeue.");
-    return nullptr;
+    Message empty;
+    empty.length = 0;
+    return empty;
   }
-  char* message = messageQueue[queueHead];
+  Message msg = messageQueue[queueHead];
   queueHead = (queueHead + 1) % MAX_QUEUE_SIZE;
-  return message;
+  return msg;
 }
 
-void transmit(const char* data) {
-  Serial.println("[SX1262] Starting transmission of: " + String(data));
-  int dataLength = strlen(data);
-  if (dataLength > 256) {
-    Serial.println("Data too long, truncating.");
-    dataLength = 256;
+String toHexString(const uint8_t* data, size_t length) {
+  String result = "";
+  for (size_t i = 0; i < length; i++) {
+    if (data[i] < 16) {
+      result += "0";
+    }
+    result += String(data[i], HEX);
   }
-  int state = radio.startTransmit((uint8_t*)data, dataLength);
-  //Serial.println("startTransmit() state: " + String(state));
+  return result;
+}
+
+void transmit(const uint8_t* data, size_t length) {
+  if (keySet) {
+    Serial.println("[SX1262] Starting transmission of encrypted data.");
+  } else {
+    Serial.println("[SX1262] Starting transmission of plaintext data.");
+  }
+  int state = radio.startTransmit(data, length);
   if (state != RADIOLIB_ERR_NONE) {
     Serial.println("[SX1262] startTransmit() failed, code " + String(state));
     radio.startReceive();
     transmitting = false;
   } else {
     transmitting = true;
-    Serial.println("[SX1262] Message transferred");
+    Serial.println("[SX1262] Message transmitted.");
   }
 }
 
@@ -77,10 +95,20 @@ void receive() {
     if (length > 256) length = 256;
     int state = radio.readData(buffer, length);
     if (state == RADIOLIB_ERR_NONE) {
-      //Serial.println("[SX1262] Received packet!");
-      Serial.println("[SX1262] RX Data: " + String((char*)buffer));
-      //Serial.println("[SX1262] RSSI:\t" + String(radio.getRSSI()) + " dBm");
-      //Serial.println("[SX1262] SNR:\t" + String(radio.getSNR()) + " dB");
+      if (keySet) {
+        uint8_t decrypted[length];
+        size_t decryptedLen = aes->decryptECB(buffer, length, decrypted);
+        // Remove padding
+        if (decryptedLen >= 1) {
+          int pad = decrypted[decryptedLen - 1];
+          if (pad < 16) {
+            decryptedLen -= pad;
+          }
+        }
+        Serial.println("[SX1262] RX Data (decrypted): " + String((char*)decrypted, decryptedLen));
+      } else {
+        Serial.println("[SX1262] RX Data (plaintext): " + String((char*)buffer));
+      }
     } else if (state == RADIOLIB_ERR_CRC_MISMATCH) {
       Serial.println("[SX1262] CRC error!");
     } else {
@@ -120,25 +148,111 @@ void setup() {
   radio.setCodingRate(8);
   radio.setPreambleLength(8);
   radio.setSyncWord(0x12);
+  radio.setOutputPower(22);
   radio.setCRC(true);
 
   radio.startReceive();
+
+  sleep_ms(2000);
+  Serial.println("Enter cipher/decipher key (16 bytes) or leave empty and press ENTER:");
+  String inputKey = "";
+  while (Serial.available() == 0) {
+    Serial.read();
+  }
+  delay(1000);
+  inputKey = Serial.readStringUntil('\n');
+  inputKey.trim();
+
+  Serial.println("Received key: " + inputKey);
+
+  if (inputKey.length() > 0) {
+    if (inputKey.length() < 16) {
+      Serial.println("Key is less than 16 bytes. Padding with zeros.");
+      inputKey += String(16 - inputKey.length(), '0');
+    } else if (inputKey.length() > 16) {
+      Serial.println("Key is longer than 16 bytes. Truncating to 16 bytes.");
+      inputKey = inputKey.substring(0, 16);
+    }
+    for (int i = 0; i < 16; i++) {
+      key[i] = inputKey[i];
+    }
+    aes = new RadioLibAES128();
+    aes->init(key);
+    keySet = true;
+    Serial.println("Encryption key set.");
+  } else {
+    Serial.println("No encryption key set.");
+  }
+  delay(2000);
 
   Serial.println("Just chat with the other devices.");
 }
 
 void loop() {
-  if (Serial.available()) {
-    String input = Serial.readStringUntil('\n');
-    if (input.length() > 0) {
-      enqueueMessage(input.c_str());
+  String input = Serial.readStringUntil('\n');
+  if (input.length() > 0) {
+    // Check if the input is the "/changekey" command
+    if (input.startsWith("/changekey")) {
+      // Extract the new key from the input string
+      String newKeyInput = input.substring(10); // Remove "/changekey " prefix
+      newKeyInput.trim();
+
+      if (newKeyInput.length() == 0) {
+        // Disable encryption
+        if (aes != nullptr) {
+          delete aes;
+          aes = nullptr;
+        }
+        keySet = false;
+        Serial.println("Encryption disabled.");
+      } else {
+        // Adjust new key to 16 bytes
+        if (newKeyInput.length() < 16) {
+          Serial.println("Key is less than 16 bytes. Padding with zeros.");
+          newKeyInput += String(16 - newKeyInput.length(), '0');
+        } else if (newKeyInput.length() > 16) {
+          Serial.println("Key is longer than 16 bytes. Truncating to 16 bytes.");
+          newKeyInput = newKeyInput.substring(0, 16);
+        }
+        for (int i = 0; i < 16; i++) {
+          key[i] = newKeyInput[i];
+        }
+        // Initialize or reinitialize AES with the new key
+        if (aes == nullptr) {
+          aes = new RadioLibAES128();
+        }
+        aes->init(key);
+        keySet = true;
+        Serial.println("Encryption key changed.");
+      }
+    } else {
+      // Proceed with sending the message
+      char buf[MAX_MSG_LENGTH];
+      memset(buf, 0, sizeof(buf));
+      int len = min((int)input.length(), (int)MAX_MSG_LENGTH - 1);
+      strncpy(buf, input.c_str(), len);
+      if (keySet) {
+        // PKCS#7 padding
+        int padding = 16 - (len % 16);
+        if (padding < 16) {
+          memset(buf + len, padding, padding);
+          len += padding;
+        }
+        uint8_t* encrypted = new uint8_t[len];
+        size_t encryptedLen = aes->encryptECB((uint8_t*)buf, len, encrypted);
+        enqueueMessage(encrypted, encryptedLen);
+        delete[] encrypted;
+      } else {
+        enqueueMessage((uint8_t*)buf, len);
+      }
+      Serial.println("[SX1262] Message: " + input);
     }
   }
 
   if (!transmitting && queueHead != queueTail) {
-    char* message = dequeueMessage();
-    if (message != nullptr) {
-      transmit(message);
+    Message msg = dequeueMessage();
+    if (msg.length > 0) {
+      transmit(msg.data, msg.length);
     }
   }
 
@@ -146,11 +260,10 @@ void loop() {
     actionDone = false;
     transmitting = false;
     radio.startReceive();
-    // Check if there are more messages to send
     if (queueHead != queueTail) {
-      char* nextMessage = dequeueMessage();
-      if (nextMessage != nullptr) {
-        transmit(nextMessage);
+      Message msg = dequeueMessage();
+      if (msg.length > 0) {
+        transmit(msg.data, msg.length);
         transmitting = true;
       }
     }
